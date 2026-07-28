@@ -11,6 +11,8 @@ import {
   ImageSquare,
   List,
   LockKey,
+  LinkSimple,
+  SignOut,
   TextT,
   Trash,
   UploadSimple,
@@ -27,31 +29,35 @@ import {
   useState,
 } from "react";
 import {
+  ApiError,
   apiConfigured,
   createOrRestoreGuest,
+  deleteAccount,
   getAuthProviders,
+  getBoundIdentities,
+  getCreditTransactions,
   getCurrentIdentity,
+  logout,
   oauthStartUrl,
+  unlinkIdentity,
   type AuthProvider,
+  type BoundIdentity,
+  type CreditTransaction,
   type CurrentIdentity,
 } from "./api";
+import {
+  footerCopy,
+  ProductInformationPage,
+  type ProductLanguage,
+  type ProductRoute,
+} from "./ProductPages";
 
-type Language = "zh" | "en";
-type Identity = "guest" | "google" | "github" | null;
-type RoutePath = "/" | "/workspace" | "/pricing";
+type Language = ProductLanguage;
+type Identity = "guest" | "user" | null;
+type AuthChoice = "guest" | "google" | "github" | "wechat";
+type RoutePath = ProductRoute;
 type GenerateStatus = "empty" | "generating" | "complete";
 type BillingCycle = "monthly" | "yearly";
-
-const defaultAuthProviders: AuthProvider[] = [
-  { id: "google", name: "Google", enabled: false },
-  { id: "github", name: "GitHub", enabled: false },
-  { id: "wechat", name: "WeChat", enabled: false },
-];
-
-function identityFromResponse(identity: CurrentIdentity): Exclude<Identity, null> {
-  if (identity.kind === "guest") return "guest";
-  return identity.providers.includes("github") ? "github" : "google";
-}
 
 const siteBasePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -60,6 +66,12 @@ function sitePath(path: string) {
 }
 
 const figureAssetPath = sitePath("/assets/autodraftman-showcase.png");
+const sessionMarker = "autodraftman-session";
+const defaultAuthProviders: AuthProvider[] = [
+  { id: "google", name: "Google", enabled: false },
+  { id: "github", name: "GitHub", enabled: false },
+  { id: "wechat", name: "WeChat", enabled: false },
+];
 
 const copy = {
   zh: {
@@ -160,6 +172,8 @@ const copy = {
       promptError: "请先描述你希望生成的内容。",
       noCredits: "当前账户没有可用额度，定价页面仍为界面预览。",
       mockNotice: "本地演示，不会调用真实生图接口。",
+      generationUnavailable:
+        "游客身份与额度已经保存到数据库；生图内核尚未接入，本次不会创建任务或扣除额度。",
     },
     pricing: {
       kicker: "Sketch · Folio · Atlas",
@@ -198,18 +212,46 @@ const copy = {
     },
     auth: {
       title: "开始生成",
-      body: "选择一种登录方式保存历史，或使用一次游客免费额度继续。",
+      body: "登录后可以保存历史，也可以使用一次游客免费额度继续。",
       google: "使用 Google 登录",
       github: "使用 GitHub 登录",
       wechat: "使用微信登录",
       guest: "以游客身份继续",
       guestNote: "游客内容仅短期保存",
+      close: "关闭登录窗口",
       deployRequired: "公网后端部署后启用",
       comingSoon: "待接入",
-      connecting: "正在连接身份服务…",
-      connectionError: "身份服务暂时不可用，请稍后重试。",
-      close: "关闭登录窗口",
-      demo: "登录渠道由服务端统一管理；当前不可用的渠道会明确标注。",
+      demo: "登录渠道状态由后端统一管理。",
+      noProvider: "当前为静态预览；真实登录将在公网后端部署后启用。",
+      cancelled: "你取消了登录授权，账户没有发生变化。",
+      conflict: "这个登录身份已经属于另一个 AutoDraftman 账户。",
+      loginFailed: "登录没有完成，请稍后重试。",
+      connectionError: "暂时无法连接本地后端，请确认 Docker 服务仍在运行。",
+      connecting: "正在连接…",
+      accountTitle: "你的账户",
+      accountBody: "不同登录方式可以绑定到同一个 AutoDraftman 账户。",
+      linked: "已绑定",
+      addLogin: "添加登录方式",
+      unlink: "解除绑定",
+      logout: "退出登录",
+      lastLogin: "至少需要保留一种登录方式。",
+      noEmail: "未提供邮箱",
+      creditActivity: "额度记录",
+      noTransactions: "暂时没有额度变化。",
+      creditAfter: "变更后",
+      granted: "发放额度",
+      reserved: "冻结额度",
+      settled: "完成结算",
+      released: "释放额度",
+      refunded: "退回额度",
+      adjusted: "额度调整",
+      dangerZone: "账户管理",
+      deleteAccount: "注销账户",
+      deleteTitle: "确认注销这个账户？",
+      deleteBody:
+        "登录方式会立即解除，账户和内容将无法继续访问。主文件将在 24 小时内清理，账户记录计划在 30 天后清除。",
+      deleteConfirm: "确认注销",
+      cancelDelete: "保留账户",
     },
   },
   en: {
@@ -317,6 +359,8 @@ const copy = {
       noCredits:
         "This account has no credits left. Pricing is still an interface preview.",
       mockNotice: "Local preview. No real image API is called.",
+      generationUnavailable:
+        "Your guest identity and credit are stored in PostgreSQL. The image kernel is not connected, so no task or charge was created.",
     },
     pricing: {
       kicker: "Sketch · Folio · Atlas",
@@ -357,18 +401,46 @@ const copy = {
     },
     auth: {
       title: "Start generating",
-      body: "Choose a sign-in method to save history, or use one free guest generation.",
+      body: "Sign in to save history, or continue with one free guest generation.",
       google: "Continue with Google",
       github: "Continue with GitHub",
       wechat: "Continue with WeChat",
       guest: "Continue as guest",
       guestNote: "Guest files are stored temporarily",
+      close: "Close sign-in dialog",
       deployRequired: "Available after API deployment",
       comingSoon: "Coming soon",
-      connecting: "Connecting to identity service…",
-      connectionError: "The identity service is temporarily unavailable. Please try again.",
-      close: "Close sign-in dialog",
-      demo: "Sign-in methods are managed by the server; unavailable options are clearly marked.",
+      demo: "Sign-in availability is managed by the backend.",
+      noProvider: "This is a static preview. Real sign-in activates after the public API is deployed.",
+      cancelled: "Authorization was cancelled. Your account was not changed.",
+      conflict: "This login identity already belongs to another AutoDraftman account.",
+      loginFailed: "Sign-in did not complete. Please try again.",
+      connectionError: "The local API is unavailable. Check that Docker is still running.",
+      connecting: "Connecting…",
+      accountTitle: "Your account",
+      accountBody: "Different login methods can open the same AutoDraftman account.",
+      linked: "Linked",
+      addLogin: "Add a login method",
+      unlink: "Unlink",
+      logout: "Sign out",
+      lastLogin: "At least one login method must remain linked.",
+      noEmail: "No email provided",
+      creditActivity: "Credit activity",
+      noTransactions: "No credit changes yet.",
+      creditAfter: "After",
+      granted: "Credits granted",
+      reserved: "Credits reserved",
+      settled: "Generation settled",
+      released: "Credits released",
+      refunded: "Credits refunded",
+      adjusted: "Credit adjustment",
+      dangerZone: "Account management",
+      deleteAccount: "Close account",
+      deleteTitle: "Close this account?",
+      deleteBody:
+        "Sign-in methods are removed immediately and the account and content become inaccessible. Primary files are scheduled for removal within 24 hours and account records after 30 days.",
+      deleteConfirm: "Close account",
+      cancelDelete: "Keep account",
     },
   },
 } as const;
@@ -376,7 +448,15 @@ const copy = {
 type UiCopy = (typeof copy)[Language];
 
 function isRoutePath(value: string): value is RoutePath {
-  return value === "/" || value === "/workspace" || value === "/pricing";
+  return [
+    "/",
+    "/workspace",
+    "/pricing",
+    "/docs",
+    "/privacy",
+    "/terms",
+    "/content-policy",
+  ].includes(value as RoutePath);
 }
 
 function routeFromLocation(pathname: string): RoutePath {
@@ -476,7 +556,12 @@ const planMarkSources = [
 function PlanMark({ level, label }: { level: number; label: string }) {
   return (
     <figure className={`plan-mark plan-mark-${level}`}>
-      <img src={planMarkSources[level]} alt={label} />
+      <img
+        src={planMarkSources[level]}
+        alt={label}
+        width={1254}
+        height={1254}
+      />
     </figure>
   );
 }
@@ -484,6 +569,7 @@ function PlanMark({ level, label }: { level: number; label: string }) {
 function Header({
   language,
   identity,
+  accountName,
   ui,
   route,
   onLanguageChange,
@@ -492,6 +578,7 @@ function Header({
 }: {
   language: Language;
   identity: Identity;
+  accountName: string | null;
   ui: UiCopy;
   route: RoutePath;
   onLanguageChange: () => void;
@@ -540,8 +627,8 @@ function Header({
             <span>
               {identity === "guest"
                 ? ui.nav.guest
-                : identity === "google"
-                  ? ui.nav.account
+                : identity === "user"
+                  ? accountName || ui.nav.account
                   : ui.nav.signIn}
             </span>
           </button>
@@ -698,9 +785,11 @@ function ProductStory({ ui }: { ui: UiCopy }) {
 
 function HomePage({
   ui,
+  language,
   onNavigate,
 }: {
   ui: UiCopy;
+  language: Language;
   onNavigate: (path: RoutePath) => void;
 }) {
   return (
@@ -799,7 +888,7 @@ function HomePage({
         </InternalLink>
       </section>
 
-      <Footer ui={ui} onNavigate={onNavigate} />
+      <Footer ui={ui} language={language} onNavigate={onNavigate} />
     </main>
   );
 }
@@ -808,12 +897,14 @@ function WorkspacePage({
   ui,
   language,
   identity,
+  credits,
   requestAuth,
   onNavigate,
 }: {
   ui: UiCopy;
   language: Language;
   identity: Identity;
+  credits: number | null;
   requestAuth: (action: () => void) => void;
   onNavigate: (path: RoutePath) => void;
 }) {
@@ -823,40 +914,14 @@ function WorkspacePage({
   const [ratio, setRatio] = useState("16:9");
   const [format, setFormat] = useState("PNG");
   const [isPublic, setIsPublic] = useState(false);
-  const [status, setStatus] = useState<GenerateStatus>("empty");
-  const [progress, setProgress] = useState(0);
+  const [status] = useState<GenerateStatus>("empty");
+  const [progress] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyVisible, setHistoryVisible] = useState(true);
   const [message, setMessage] = useState("");
-  const [credits, setCredits] = useState(0);
-
-  useEffect(() => {
-    setCredits(identity === "guest" ? 1 : identity ? 12 : 0);
-  }, [identity]);
-
-  useEffect(() => {
-    if (status !== "generating") return;
-    setProgress(8);
-    const progressTimer = window.setInterval(
-      () => setProgress((value) => Math.min(value + 11, 92)),
-      360,
-    );
-    const finishTimer = window.setTimeout(() => {
-      window.clearInterval(progressTimer);
-      setProgress(100);
-      setCredits((value) => Math.max(value - 1, 0));
-      setStatus("complete");
-      setHistoryVisible(true);
-    }, 3200);
-    return () => {
-      window.clearInterval(progressTimer);
-      window.clearTimeout(finishTimer);
-    };
-  }, [status]);
 
   const startGeneration = () => {
-    setMessage("");
-    setStatus("generating");
+    setMessage(ui.workspace.generationUnavailable);
   };
 
   const handleGenerate = () => {
@@ -864,7 +929,7 @@ function WorkspacePage({
       setMessage(ui.workspace.promptError);
       return;
     }
-    if (identity && credits <= 0) {
+    if (identity && (credits ?? 0) <= 0) {
       setMessage(ui.workspace.noCredits);
       return;
     }
@@ -895,7 +960,7 @@ function WorkspacePage({
         </div>
         <div className="workspace-balance">
           <span>{ui.workspace.credits}</span>
-          <strong>{credits}</strong>
+          <strong>{credits ?? "—"}</strong>
         </div>
       </header>
 
@@ -1207,9 +1272,11 @@ const planPrices = [
 
 function PricingPage({
   ui,
+  language,
   onNavigate,
 }: {
   ui: UiCopy;
+  language: Language;
   onNavigate: (path: RoutePath) => void;
 }) {
   const [billing, setBilling] = useState<BillingCycle>("monthly");
@@ -1240,6 +1307,7 @@ function PricingPage({
             type="button"
             className={billing === "yearly" ? "selected" : ""}
             aria-pressed={billing === "yearly"}
+            data-allow-wrap="true"
             onClick={() => setBilling("yearly")}
           >
             {ui.pricing.yearly}
@@ -1330,7 +1398,7 @@ function PricingPage({
         </button>
       </section>
 
-      <Footer ui={ui} onNavigate={onNavigate} />
+      <Footer ui={ui} language={language} onNavigate={onNavigate} />
       {toast && (
         <div className="toast" role="status">
           <LockKey size={18} />
@@ -1343,48 +1411,88 @@ function PricingPage({
 
 function Footer({
   ui,
+  language,
   onNavigate,
 }: {
   ui: UiCopy;
+  language: Language;
   onNavigate: (path: RoutePath) => void;
 }) {
+  const footer = footerCopy[language];
+
   return (
     <footer className="site-footer">
-      <div className="footer-statement shell">
-        <p>{ui.home.footerStatement}</p>
-      </div>
-      <div className="footer-meta shell">
-        <Brand onNavigate={onNavigate} />
-        <p>{ui.home.footer}</p>
-        <nav aria-label="Footer navigation">
-          <InternalLink href="/pricing" onNavigate={onNavigate}>
-            {ui.nav.pricing}
-          </InternalLink>
+      <div className="footer-directory shell">
+        <div className="footer-lead">
+          <Brand onNavigate={onNavigate} />
+          <p>{ui.home.footerStatement}</p>
+          <span>{ui.home.footer}</span>
+        </div>
+        <nav aria-label={footer.product}>
+          <p>{footer.product}</p>
           <InternalLink href="/workspace" onNavigate={onNavigate}>
-            {ui.nav.workspace}
+            {footer.workspace}
+          </InternalLink>
+          <InternalLink href="/pricing" onNavigate={onNavigate}>
+            {footer.pricing}
           </InternalLink>
         </nav>
+        <nav aria-label={footer.resources}>
+          <p>{footer.resources}</p>
+          <InternalLink href="/docs" onNavigate={onNavigate}>
+            {footer.docs}
+          </InternalLink>
+          <InternalLink href="/privacy" onNavigate={onNavigate}>
+            {footer.privacy}
+          </InternalLink>
+          <InternalLink href="/terms" onNavigate={onNavigate}>
+            {footer.terms}
+          </InternalLink>
+          <InternalLink href="/content-policy" onNavigate={onNavigate}>
+            {footer.content}
+          </InternalLink>
+        </nav>
+        <div className="footer-contact">
+          <p>{footer.contact}</p>
+          <span>{footer.contactBody}</span>
+        </div>
+      </div>
+      <div className="footer-bottom shell">
+        <p>{footer.copyright}</p>
+        <p>{footer.internal}</p>
+        <span aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
       </div>
     </footer>
   );
 }
 
+function ProviderIcon({ provider }: { provider: string }) {
+  if (provider === "google") return <GoogleLogo size={19} weight="bold" />;
+  if (provider === "github") return <GithubLogo size={19} weight="bold" />;
+  if (provider === "wechat") return <WechatLogo size={19} weight="fill" />;
+  return <UserCircle size={19} />;
+}
+
 function LoginDialog({
   ui,
   open,
-  providers,
   busy,
   error,
+  providers,
   onClose,
   onSelect,
 }: {
   ui: UiCopy;
   open: boolean;
-  providers: AuthProvider[];
   busy: boolean;
   error: string;
+  providers: AuthProvider[];
   onClose: () => void;
-  onSelect: (identity: Exclude<Identity, null> | "wechat") => void;
+  onSelect: (identity: AuthChoice) => void;
 }) {
   const firstButton = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -1416,18 +1524,6 @@ function LoginDialog({
   }, [open, onClose]);
 
   if (!open) return null;
-
-  const providerCopy = {
-    google: ui.auth.google,
-    github: ui.auth.github,
-    wechat: ui.auth.wechat,
-  };
-  const providerIcons = {
-    google: <GoogleLogo size={19} weight="bold" />,
-    github: <GithubLogo size={19} weight="bold" />,
-    wechat: <WechatLogo size={19} weight="fill" />,
-  };
-
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
@@ -1446,33 +1542,38 @@ function LoginDialog({
         <p>{ui.auth.body}</p>
         <div className="login-actions">
           {providers.map((provider, index) => {
-            const canUseProvider =
-              provider.id !== "wechat" && provider.enabled && apiConfigured;
+            const enabled =
+              apiConfigured && provider.enabled && provider.id !== "wechat";
+            const label =
+              provider.id === "google"
+                ? ui.auth.google
+                : provider.id === "github"
+                  ? ui.auth.github
+                  : ui.auth.wechat;
             const status =
               provider.id === "wechat"
                 ? ui.auth.comingSoon
-                : canUseProvider
+                : enabled
                   ? ""
                   : ui.auth.deployRequired;
 
             return (
               <button
+                key={provider.id}
                 ref={index === 0 ? firstButton : undefined}
                 className="oauth-button"
                 type="button"
-                disabled={!canUseProvider || busy}
+                disabled={busy || !enabled}
                 onClick={() => onSelect(provider.id)}
-                key={provider.id}
               >
-                <span className="oauth-button-icon">{providerIcons[provider.id]}</span>
-                <span className="oauth-button-label">{providerCopy[provider.id]}</span>
+                <span className="oauth-button-icon">
+                  <ProviderIcon provider={provider.id} />
+                </span>
+                <span className="oauth-button-label">{label}</span>
                 {status && <small>{status}</small>}
               </button>
             );
           })}
-          <div className="login-divider" aria-hidden="true">
-            <span />
-          </div>
           <button
             className="guest-button"
             type="button"
@@ -1481,14 +1582,239 @@ function LoginDialog({
           >
             <UserCircle size={19} />
             <span>
-              <strong>{ui.auth.guest}</strong>
+              <strong>{busy ? ui.auth.connecting : ui.auth.guest}</strong>
               <small>{ui.auth.guestNote}</small>
             </span>
           </button>
         </div>
-        {busy && <p className="dialog-status" role="status">{ui.auth.connecting}</p>}
-        {error && <p className="dialog-error" role="alert">{error}</p>}
-        <p className="dialog-demo-note">{ui.auth.demo}</p>
+        {error && (
+          <p className="dialog-error" role="alert" aria-live="polite">
+            {error}
+          </p>
+        )}
+        <p className="dialog-demo-note">
+          {apiConfigured ? ui.auth.demo : ui.auth.noProvider}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function AccountDialog({
+  ui,
+  open,
+  current,
+  providers,
+  identities,
+  transactions,
+  busy,
+  error,
+  onClose,
+  onLink,
+  onUnlink,
+  onLogout,
+  onDeleteAccount,
+}: {
+  ui: UiCopy;
+  open: boolean;
+  current: CurrentIdentity | null;
+  providers: AuthProvider[];
+  identities: BoundIdentity[];
+  transactions: CreditTransaction[];
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onLink: (provider: "google" | "github") => void;
+  onUnlink: (provider: string) => void;
+  onLogout: () => void;
+  onDeleteAccount: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setDeleteConfirmOpen(false);
+    dialogRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [open, onClose]);
+
+  if (!open || current?.kind !== "user") return null;
+  const linkedProviders = new Set(identities.map((identity) => identity.provider));
+  const availableProviders = providers.filter(
+    (provider): provider is AuthProvider & { id: "google" | "github" } =>
+      provider.enabled &&
+      provider.id !== "wechat" &&
+      !linkedProviders.has(provider.id),
+  );
+  const transactionLabels = {
+    grant: ui.auth.granted,
+    reserve: ui.auth.reserved,
+    settle: ui.auth.settled,
+    release: ui.auth.released,
+    refund: ui.auth.refunded,
+    adjustment: ui.auth.adjusted,
+  } as const;
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div
+        className="login-dialog account-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="account-title"
+        ref={dialogRef}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button className="dialog-close" type="button" aria-label={ui.auth.close} onClick={onClose}>
+          <X size={20} />
+        </button>
+        <p className="dialog-label">AutoDraftman</p>
+        <h2 id="account-title">{ui.auth.accountTitle}</h2>
+        <p>{ui.auth.accountBody}</p>
+        <div className="account-profile">
+          {current.avatar_url ? (
+            <img
+              src={current.avatar_url}
+              alt=""
+              width={34}
+              height={34}
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <UserCircle size={34} />
+          )}
+          <div>
+            <strong>{current.display_name || "AutoDraftman user"}</strong>
+            <small>{current.balance.available} credits</small>
+          </div>
+        </div>
+
+        <section className="identity-section">
+          <p>{ui.auth.linked}</p>
+          {identities.map((identity) => (
+            <div className="identity-row" key={identity.provider}>
+              <ProviderIcon provider={identity.provider} />
+              <span>
+                <strong>
+                  {identity.provider === "google" ? "Google" : "GitHub"}
+                </strong>
+                <small>{identity.email || ui.auth.noEmail}</small>
+              </span>
+              <button
+                type="button"
+                disabled={busy || identities.length <= 1}
+                title={identities.length <= 1 ? ui.auth.lastLogin : undefined}
+                onClick={() => onUnlink(identity.provider)}
+              >
+                {ui.auth.unlink}
+              </button>
+            </div>
+          ))}
+        </section>
+
+        {availableProviders.length > 0 && (
+          <section className="identity-section">
+            <p>{ui.auth.addLogin}</p>
+            {availableProviders.map((provider) => (
+              <button
+                className="link-provider-button"
+                type="button"
+                key={provider.id}
+                disabled={busy}
+                onClick={() => onLink(provider.id)}
+              >
+                <LinkSimple size={17} />
+                {provider.name}
+              </button>
+            ))}
+          </section>
+        )}
+
+        <section className="credit-activity">
+          <div className="account-section-heading">
+            <p>{ui.auth.creditActivity}</p>
+            <ClockCounterClockwise size={17} />
+          </div>
+          {transactions.length > 0 ? (
+            <ol>
+              {transactions.map((transaction) => {
+                const delta = transaction.delta_available;
+                return (
+                  <li key={transaction.id}>
+                    <span>
+                      <strong>{transactionLabels[transaction.kind]}</strong>
+                      <small>
+                        {new Intl.DateTimeFormat(
+                          document.documentElement.lang || "zh-CN",
+                          {
+                            year: "numeric",
+                            month: "short",
+                            day: "numeric",
+                          },
+                        ).format(new Date(transaction.created_at))}
+                      </small>
+                    </span>
+                    <span className={delta >= 0 ? "credit-positive" : "credit-negative"}>
+                      <strong>{delta > 0 ? `+${delta}` : delta}</strong>
+                      <small>
+                        {ui.auth.creditAfter} {transaction.available_after}
+                      </small>
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+          ) : (
+            <p className="account-empty">{ui.auth.noTransactions}</p>
+          )}
+        </section>
+
+        {error && (
+          <p className="dialog-error" role="alert" aria-live="polite">
+            {error}
+          </p>
+        )}
+        <button className="logout-button" type="button" disabled={busy} onClick={onLogout}>
+          <SignOut size={18} />
+          {ui.auth.logout}
+        </button>
+
+        <section className="account-danger">
+          <p>{ui.auth.dangerZone}</p>
+          {deleteConfirmOpen ? (
+            <div className="delete-confirmation">
+              <strong>{ui.auth.deleteTitle}</strong>
+              <p>{ui.auth.deleteBody}</p>
+              <div>
+                <button type="button" disabled={busy} onClick={onDeleteAccount}>
+                  <Trash size={17} />
+                  {ui.auth.deleteConfirm}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setDeleteConfirmOpen(false)}
+                >
+                  {ui.auth.cancelDelete}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              className="delete-account-button"
+              type="button"
+              disabled={busy}
+              onClick={() => setDeleteConfirmOpen(true)}
+            >
+              {ui.auth.deleteAccount}
+            </button>
+          )}
+        </section>
       </div>
     </div>
   );
@@ -1501,13 +1827,25 @@ export default function App() {
     const stored = window.localStorage.getItem("autodraftman-language");
     return stored === "en" ? "en" : "zh";
   });
+  const [currentIdentity, setCurrentIdentity] = useState<CurrentIdentity | null>(null);
   const [identity, setIdentity] = useState<Identity>(null);
-  const [authProviders, setAuthProviders] = useState<AuthProvider[]>(defaultAuthProviders);
+  const [credits, setCredits] = useState<number | null>(null);
+  const [providers, setProviders] = useState<AuthProvider[]>(defaultAuthProviders);
+  const [boundIdentities, setBoundIdentities] = useState<BoundIdentity[]>([]);
+  const [creditTransactions, setCreditTransactions] = useState<CreditTransaction[]>([]);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
-  const [loginOpen, setLoginOpen] = useState(false);
+  const [accountError, setAccountError] = useState("");
   const pendingAction = useRef<(() => void) | null>(null);
   const ui = copy[language];
+
+  const applyServerIdentity = (current: CurrentIdentity) => {
+    setCurrentIdentity(current);
+    setIdentity(current.kind);
+    setCredits(current.balance.available);
+  };
 
   useEffect(() => {
     const handlePopState = () => {
@@ -1518,38 +1856,90 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
-    document.documentElement.dataset.language = language;
-    window.localStorage.setItem("autodraftman-language", language);
-  }, [language]);
+    if (!apiConfigured) return;
+    const returnedFromOAuth =
+      new URL(window.location.href).searchParams.get("auth") === "success";
+    if (
+      window.localStorage.getItem(sessionMarker) !== "active" &&
+      !returnedFromOAuth
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    getCurrentIdentity()
+      .then((current) => {
+        if (!cancelled) applyServerIdentity(current);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 401) {
+          window.localStorage.removeItem(sessionMarker);
+          setCurrentIdentity(null);
+          setIdentity(null);
+          setCredits(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!apiConfigured) return;
-
-    let active = true;
-    Promise.allSettled([getAuthProviders(), getCurrentIdentity()]).then(
-      ([providerResult, identityResult]) => {
-        if (!active) return;
-        if (providerResult.status === "fulfilled") {
+    let cancelled = false;
+    getAuthProviders()
+      .then((available) => {
+        if (!cancelled) {
           const providersById = new Map(
-            providerResult.value.map((provider) => [provider.id, provider]),
+            available.map((provider) => [provider.id, provider]),
           );
-          setAuthProviders(
+          setProviders(
             defaultAuthProviders.map(
               (provider) => providersById.get(provider.id) ?? provider,
             ),
           );
         }
-        if (identityResult.status === "fulfilled") {
-          setIdentity(identityFromResponse(identityResult.value));
-        }
-      },
-    );
-
+      })
+      .catch(() => {
+        if (!cancelled) setProviders([]);
+      });
     return () => {
-      active = false;
+      cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const authResult = url.searchParams.get("auth");
+    const authFailure = url.searchParams.get("auth_error");
+    if (!authResult && !authFailure) return;
+
+    if (authResult === "success") {
+      window.localStorage.setItem(sessionMarker, "active");
+    }
+    if (authFailure) {
+      setAuthError(
+        authFailure === "authorization_cancelled"
+          ? ui.auth.cancelled
+          : authFailure === "identity_conflict"
+            ? ui.auth.conflict
+          : ui.auth.loginFailed,
+      );
+      setLoginOpen(true);
+    }
+    url.searchParams.delete("auth");
+    url.searchParams.delete("auth_error");
+    url.searchParams.delete("provider");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [ui.auth.cancelled, ui.auth.conflict, ui.auth.loginFailed]);
+
+  useEffect(() => {
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+    document.documentElement.dataset.language = language;
+    window.localStorage.setItem("autodraftman-language", language);
+  }, [language]);
 
   const navigate = (path: RoutePath) => {
     const nextHref = routeHref(path);
@@ -1562,6 +1952,7 @@ export default function App() {
 
   const openLogin = (action?: () => void) => {
     pendingAction.current = action ?? null;
+    setAuthError("");
     setLoginOpen(true);
   };
 
@@ -1573,37 +1964,127 @@ export default function App() {
     openLogin(action);
   };
 
-  const completeIdentitySelection = (nextIdentity: Exclude<Identity, null>) => {
-    setIdentity(nextIdentity);
-    setLoginOpen(false);
-    setAuthError("");
-    window.setTimeout(() => {
-      pendingAction.current?.();
-      pendingAction.current = null;
-    }, 0);
-  };
+  const selectIdentity = async (choice: AuthChoice) => {
+    if (choice === "wechat") return;
 
-  const selectIdentity = async (nextIdentity: Exclude<Identity, null> | "wechat") => {
-    if (nextIdentity === "wechat") return;
-
-    if (nextIdentity === "google" || nextIdentity === "github") {
+    if (choice === "google" || choice === "github") {
       if (!apiConfigured) return;
-      window.location.assign(oauthStartUrl(nextIdentity));
+      window.location.assign(oauthStartUrl(choice));
       return;
     }
 
     if (!apiConfigured) {
-      completeIdentitySelection("guest");
+      setIdentity("guest");
+      setCredits(1);
+      setLoginOpen(false);
+      const action = pendingAction.current;
+      pendingAction.current = null;
+      window.setTimeout(() => action?.(), 0);
       return;
     }
 
     setAuthBusy(true);
     setAuthError("");
     try {
-      const guest = await createOrRestoreGuest();
-      completeIdentitySelection(identityFromResponse(guest));
+      const current = await createOrRestoreGuest();
+      applyServerIdentity(current);
+      window.localStorage.setItem(sessionMarker, "active");
+      setLoginOpen(false);
+
+      const action = pendingAction.current;
+      pendingAction.current = null;
+      window.setTimeout(() => action?.(), 0);
     } catch {
       setAuthError(ui.auth.connectionError);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const openAccount = async () => {
+    setAccountError("");
+    setAccountOpen(true);
+    setAuthBusy(true);
+    try {
+      const [linked, transactions] = await Promise.all([
+        getBoundIdentities(),
+        getCreditTransactions(),
+      ]);
+      setBoundIdentities(linked);
+      setCreditTransactions(transactions);
+    } catch (error) {
+      setAccountError(
+        error instanceof ApiError ? error.message : ui.auth.connectionError,
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const refreshAccount = async () => {
+    const [current, linked, transactions] = await Promise.all([
+      getCurrentIdentity(),
+      getBoundIdentities(),
+      getCreditTransactions(),
+    ]);
+    applyServerIdentity(current);
+    setBoundIdentities(linked);
+    setCreditTransactions(transactions);
+  };
+
+  const handleUnlink = async (provider: string) => {
+    setAuthBusy(true);
+    setAccountError("");
+    try {
+      await unlinkIdentity(provider);
+      await refreshAccount();
+    } catch (error) {
+      setAccountError(
+        error instanceof ApiError ? error.message : ui.auth.connectionError,
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    setAuthBusy(true);
+    setAccountError("");
+    try {
+      await logout();
+      setCurrentIdentity(null);
+      setIdentity(null);
+      setCredits(null);
+      setBoundIdentities([]);
+      setCreditTransactions([]);
+      window.localStorage.removeItem(sessionMarker);
+      setAccountOpen(false);
+    } catch (error) {
+      setAccountError(
+        error instanceof ApiError ? error.message : ui.auth.connectionError,
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    setAuthBusy(true);
+    setAccountError("");
+    try {
+      await deleteAccount();
+      setCurrentIdentity(null);
+      setIdentity(null);
+      setCredits(null);
+      setBoundIdentities([]);
+      setCreditTransactions([]);
+      window.localStorage.removeItem(sessionMarker);
+      setAccountOpen(false);
+      navigate("/");
+    } catch (error) {
+      setAccountError(
+        error instanceof ApiError ? error.message : ui.auth.connectionError,
+      );
     } finally {
       setAuthBusy(false);
     }
@@ -1614,39 +2095,82 @@ export default function App() {
       <Header
         language={language}
         identity={identity}
+        accountName={currentIdentity?.display_name ?? null}
         ui={ui}
         route={route}
         onLanguageChange={() =>
           setLanguage((value) => (value === "zh" ? "en" : "zh"))
         }
         onNavigate={navigate}
-        onSignIn={() => openLogin()}
+        onSignIn={() => {
+          if (identity === "user") {
+            void openAccount();
+          } else {
+            openLogin();
+          }
+        }}
       />
 
-      {route === "/" && <HomePage ui={ui} onNavigate={navigate} />}
+      {route === "/" && (
+        <HomePage ui={ui} language={language} onNavigate={navigate} />
+      )}
       {route === "/workspace" && (
         <WorkspacePage
           ui={ui}
           language={language}
           identity={identity}
+          credits={credits}
           requestAuth={requestAuth}
           onNavigate={navigate}
         />
       )}
-      {route === "/pricing" && <PricingPage ui={ui} onNavigate={navigate} />}
+      {route === "/pricing" && (
+        <PricingPage ui={ui} language={language} onNavigate={navigate} />
+      )}
+      {(
+        ["/docs", "/privacy", "/terms", "/content-policy"] as const
+      ).includes(route as "/docs" | "/privacy" | "/terms" | "/content-policy") && (
+        <>
+          <ProductInformationPage
+            route={route as "/docs" | "/privacy" | "/terms" | "/content-policy"}
+            language={language}
+            hrefFor={routeHref}
+            onNavigate={navigate}
+          />
+          <Footer ui={ui} language={language} onNavigate={navigate} />
+        </>
+      )}
 
       <LoginDialog
         ui={ui}
         open={loginOpen}
-        providers={authProviders}
         busy={authBusy}
         error={authError}
+        providers={providers}
         onClose={() => {
           pendingAction.current = null;
           setAuthError("");
           setLoginOpen(false);
         }}
         onSelect={selectIdentity}
+      />
+      <AccountDialog
+        ui={ui}
+        open={accountOpen}
+        current={currentIdentity}
+        providers={providers}
+        identities={boundIdentities}
+        transactions={creditTransactions}
+        busy={authBusy}
+        error={accountError}
+        onClose={() => {
+          setAccountError("");
+          setAccountOpen(false);
+        }}
+        onLink={(provider) => window.location.assign(oauthStartUrl(provider, "link"))}
+        onUnlink={(provider) => void handleUnlink(provider)}
+        onLogout={() => void handleLogout()}
+        onDeleteAccount={() => void handleDeleteAccount()}
       />
     </>
   );

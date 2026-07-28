@@ -4,12 +4,6 @@ export const apiConfigured = Boolean(configuredApiBaseUrl);
 
 const apiBaseUrl = (configuredApiBaseUrl ?? "").replace(/\/+$/, "");
 
-export type AuthProvider = {
-  id: "google" | "github" | "wechat";
-  name: string;
-  enabled: boolean;
-};
-
 export type CurrentIdentity = {
   kind: "guest" | "user";
   id: string;
@@ -21,6 +15,32 @@ export type CurrentIdentity = {
     available: number;
     reserved: number;
   };
+};
+
+export type AuthProvider = {
+  id: "google" | "github" | "wechat";
+  name: string;
+  enabled: boolean;
+};
+
+export type BoundIdentity = {
+  provider: string;
+  email: string | null;
+  email_verified: boolean;
+  created_at: string;
+};
+
+export type CreditTransaction = {
+  id: string;
+  kind: "grant" | "reserve" | "settle" | "release" | "refund" | "adjustment";
+  delta_available: number;
+  delta_reserved: number;
+  available_after: number;
+  reserved_after: number;
+  reason: string;
+  reference_type: string | null;
+  reference_id: string | null;
+  created_at: string;
 };
 
 export class ApiError extends Error {
@@ -80,15 +100,25 @@ async function requestJson<T>(
   }
 }
 
-export async function getAuthProviders(): Promise<AuthProvider[]> {
-  const response = await requestJson<{ providers: AuthProvider[] }>(
-    "/api/v1/auth/providers",
-  );
-  return response.providers;
-}
-
-export function getCurrentIdentity(): Promise<CurrentIdentity> {
-  return requestJson<CurrentIdentity>("/api/v1/identity/me");
+async function requestVoid(path: string, init: RequestInit): Promise<void> {
+  const response = await fetch(`${requireApiBaseUrl()}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...init.headers,
+    },
+  });
+  if (!response.ok) {
+    let message = `Request failed with status ${response.status}`;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (body.detail) message = body.detail;
+    } catch {
+      // Keep the status-based message when the server did not return JSON.
+    }
+    throw new ApiError(message, response.status);
+  }
 }
 
 export function createOrRestoreGuest(): Promise<CurrentIdentity> {
@@ -97,16 +127,62 @@ export function createOrRestoreGuest(): Promise<CurrentIdentity> {
   });
 }
 
-export function oauthStartUrl(provider: "google" | "github"): string {
+export function getCurrentIdentity(): Promise<CurrentIdentity> {
+  return requestJson<CurrentIdentity>("/api/v1/identity/me");
+}
+
+export async function getAuthProviders(): Promise<AuthProvider[]> {
+  const response = await requestJson<{ providers: AuthProvider[] }>(
+    "/api/v1/auth/providers",
+  );
+  return response.providers;
+}
+
+export function oauthStartUrl(
+  provider: "google" | "github",
+  mode: "login" | "link" = "login",
+): string {
   const returnUrl = new URL(window.location.href);
   returnUrl.searchParams.delete("auth");
   returnUrl.searchParams.delete("auth_error");
   returnUrl.searchParams.delete("provider");
-
   const query = new URLSearchParams({
-    mode: "login",
+    mode,
     return_url: returnUrl.toString(),
   });
-
   return `${requireApiBaseUrl()}/api/v1/auth/oauth/${provider}/start?${query.toString()}`;
+}
+
+export async function getBoundIdentities(): Promise<BoundIdentity[]> {
+  const response = await requestJson<{ identities: BoundIdentity[] }>(
+    "/api/v1/auth/identities",
+  );
+  return response.identities;
+}
+
+export async function unlinkIdentity(provider: string): Promise<void> {
+  await requestVoid(`/api/v1/auth/identities/${provider}`, {
+    method: "DELETE",
+  });
+}
+
+export async function logout(): Promise<void> {
+  await requestVoid("/api/v1/auth/logout", {
+    method: "POST",
+  });
+}
+
+export async function getCreditTransactions(): Promise<CreditTransaction[]> {
+  const response = await requestJson<{
+    items: CreditTransaction[];
+    limit: number;
+    offset: number;
+  }>("/api/v1/credits/transactions?limit=8&offset=0");
+  return response.items;
+}
+
+export async function deleteAccount(): Promise<void> {
+  await requestVoid("/api/v1/auth/account", {
+    method: "DELETE",
+  });
 }

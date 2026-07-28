@@ -1,7 +1,12 @@
 import { chromium } from "playwright-core";
 
-const baseUrl = "http://127.0.0.1:4175/autodraftman";
-const executablePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const baseUrl =
+  process.env.PREVIEW_URL ?? "http://127.0.0.1:4175/autodraftman";
+const executablePath =
+  process.env.CHROME_PATH ??
+  (process.platform === "win32"
+    ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    : "/usr/bin/google-chrome");
 const browser = await chromium.launch({ executablePath, headless: true });
 const page = await browser.newPage({
   viewport: { width: 1440, height: 1000 },
@@ -22,7 +27,15 @@ page.on("response", (response) => {
 
 const checks = [];
 
-for (const route of ["/", "/pricing", "/workspace"]) {
+for (const route of [
+  "/",
+  "/pricing",
+  "/workspace",
+  "/docs",
+  "/privacy",
+  "/terms",
+  "/content-policy",
+]) {
   const response = await page.goto(`${baseUrl}${route}`, {
     waitUntil: "networkidle",
   });
