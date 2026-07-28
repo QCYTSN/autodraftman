@@ -5,6 +5,7 @@ import {
   ClockCounterClockwise,
   DownloadSimple,
   FileImage,
+  GithubLogo,
   Globe,
   GoogleLogo,
   ImageSquare,
@@ -14,6 +15,7 @@ import {
   Trash,
   UploadSimple,
   UserCircle,
+  WechatLogo,
   X,
 } from "@phosphor-icons/react";
 import {
@@ -24,12 +26,32 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  apiConfigured,
+  createOrRestoreGuest,
+  getAuthProviders,
+  getCurrentIdentity,
+  oauthStartUrl,
+  type AuthProvider,
+  type CurrentIdentity,
+} from "./api";
 
 type Language = "zh" | "en";
-type Identity = "guest" | "google" | null;
+type Identity = "guest" | "google" | "github" | null;
 type RoutePath = "/" | "/workspace" | "/pricing";
 type GenerateStatus = "empty" | "generating" | "complete";
 type BillingCycle = "monthly" | "yearly";
+
+const defaultAuthProviders: AuthProvider[] = [
+  { id: "google", name: "Google", enabled: false },
+  { id: "github", name: "GitHub", enabled: false },
+  { id: "wechat", name: "WeChat", enabled: false },
+];
+
+function identityFromResponse(identity: CurrentIdentity): Exclude<Identity, null> {
+  if (identity.kind === "guest") return "guest";
+  return identity.providers.includes("github") ? "github" : "google";
+}
 
 const siteBasePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -176,12 +198,18 @@ const copy = {
     },
     auth: {
       title: "开始生成",
-      body: "登录后可以保存历史，也可以使用一次游客免费额度继续。",
+      body: "选择一种登录方式保存历史，或使用一次游客免费额度继续。",
       google: "使用 Google 登录",
+      github: "使用 GitHub 登录",
+      wechat: "使用微信登录",
       guest: "以游客身份继续",
       guestNote: "游客内容仅短期保存",
+      deployRequired: "公网后端部署后启用",
+      comingSoon: "待接入",
+      connecting: "正在连接身份服务…",
+      connectionError: "身份服务暂时不可用，请稍后重试。",
       close: "关闭登录窗口",
-      demo: "当前为本地界面演示，不会连接真实 Google 账户。",
+      demo: "登录渠道由服务端统一管理；当前不可用的渠道会明确标注。",
     },
   },
   en: {
@@ -329,12 +357,18 @@ const copy = {
     },
     auth: {
       title: "Start generating",
-      body: "Sign in to save history, or continue with one free guest generation.",
+      body: "Choose a sign-in method to save history, or use one free guest generation.",
       google: "Continue with Google",
+      github: "Continue with GitHub",
+      wechat: "Continue with WeChat",
       guest: "Continue as guest",
       guestNote: "Guest files are stored temporarily",
+      deployRequired: "Available after API deployment",
+      comingSoon: "Coming soon",
+      connecting: "Connecting to identity service…",
+      connectionError: "The identity service is temporarily unavailable. Please try again.",
       close: "Close sign-in dialog",
-      demo: "This local preview does not connect to a real Google account.",
+      demo: "Sign-in methods are managed by the server; unavailable options are clearly marked.",
     },
   },
 } as const;
@@ -797,7 +831,7 @@ function WorkspacePage({
   const [credits, setCredits] = useState(0);
 
   useEffect(() => {
-    setCredits(identity === "guest" ? 1 : identity === "google" ? 12 : 0);
+    setCredits(identity === "guest" ? 1 : identity ? 12 : 0);
   }, [identity]);
 
   useEffect(() => {
@@ -1338,13 +1372,19 @@ function Footer({
 function LoginDialog({
   ui,
   open,
+  providers,
+  busy,
+  error,
   onClose,
   onSelect,
 }: {
   ui: UiCopy;
   open: boolean;
+  providers: AuthProvider[];
+  busy: boolean;
+  error: string;
   onClose: () => void;
-  onSelect: (identity: Exclude<Identity, null>) => void;
+  onSelect: (identity: Exclude<Identity, null> | "wechat") => void;
 }) {
   const firstButton = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -1377,6 +1417,17 @@ function LoginDialog({
 
   if (!open) return null;
 
+  const providerCopy = {
+    google: ui.auth.google,
+    github: ui.auth.github,
+    wechat: ui.auth.wechat,
+  };
+  const providerIcons = {
+    google: <GoogleLogo size={19} weight="bold" />,
+    github: <GithubLogo size={19} weight="bold" />,
+    wechat: <WechatLogo size={19} weight="fill" />,
+  };
+
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
@@ -1394,16 +1445,40 @@ function LoginDialog({
         <h2 id="login-title">{ui.auth.title}</h2>
         <p>{ui.auth.body}</p>
         <div className="login-actions">
+          {providers.map((provider, index) => {
+            const canUseProvider =
+              provider.id !== "wechat" && provider.enabled && apiConfigured;
+            const status =
+              provider.id === "wechat"
+                ? ui.auth.comingSoon
+                : canUseProvider
+                  ? ""
+                  : ui.auth.deployRequired;
+
+            return (
+              <button
+                ref={index === 0 ? firstButton : undefined}
+                className="oauth-button"
+                type="button"
+                disabled={!canUseProvider || busy}
+                onClick={() => onSelect(provider.id)}
+                key={provider.id}
+              >
+                <span className="oauth-button-icon">{providerIcons[provider.id]}</span>
+                <span className="oauth-button-label">{providerCopy[provider.id]}</span>
+                {status && <small>{status}</small>}
+              </button>
+            );
+          })}
+          <div className="login-divider" aria-hidden="true">
+            <span />
+          </div>
           <button
-            ref={firstButton}
-            className="google-button"
+            className="guest-button"
             type="button"
-            onClick={() => onSelect("google")}
+            disabled={busy}
+            onClick={() => onSelect("guest")}
           >
-            <GoogleLogo size={19} weight="bold" />
-            {ui.auth.google}
-          </button>
-          <button className="guest-button" type="button" onClick={() => onSelect("guest")}>
             <UserCircle size={19} />
             <span>
               <strong>{ui.auth.guest}</strong>
@@ -1411,6 +1486,8 @@ function LoginDialog({
             </span>
           </button>
         </div>
+        {busy && <p className="dialog-status" role="status">{ui.auth.connecting}</p>}
+        {error && <p className="dialog-error" role="alert">{error}</p>}
         <p className="dialog-demo-note">{ui.auth.demo}</p>
       </div>
     </div>
@@ -1425,6 +1502,9 @@ export default function App() {
     return stored === "en" ? "en" : "zh";
   });
   const [identity, setIdentity] = useState<Identity>(null);
+  const [authProviders, setAuthProviders] = useState<AuthProvider[]>(defaultAuthProviders);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
   const pendingAction = useRef<(() => void) | null>(null);
   const ui = copy[language];
@@ -1442,6 +1522,34 @@ export default function App() {
     document.documentElement.dataset.language = language;
     window.localStorage.setItem("autodraftman-language", language);
   }, [language]);
+
+  useEffect(() => {
+    if (!apiConfigured) return;
+
+    let active = true;
+    Promise.allSettled([getAuthProviders(), getCurrentIdentity()]).then(
+      ([providerResult, identityResult]) => {
+        if (!active) return;
+        if (providerResult.status === "fulfilled") {
+          const providersById = new Map(
+            providerResult.value.map((provider) => [provider.id, provider]),
+          );
+          setAuthProviders(
+            defaultAuthProviders.map(
+              (provider) => providersById.get(provider.id) ?? provider,
+            ),
+          );
+        }
+        if (identityResult.status === "fulfilled") {
+          setIdentity(identityFromResponse(identityResult.value));
+        }
+      },
+    );
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const navigate = (path: RoutePath) => {
     const nextHref = routeHref(path);
@@ -1465,13 +1573,40 @@ export default function App() {
     openLogin(action);
   };
 
-  const selectIdentity = (nextIdentity: Exclude<Identity, null>) => {
+  const completeIdentitySelection = (nextIdentity: Exclude<Identity, null>) => {
     setIdentity(nextIdentity);
     setLoginOpen(false);
+    setAuthError("");
     window.setTimeout(() => {
       pendingAction.current?.();
       pendingAction.current = null;
     }, 0);
+  };
+
+  const selectIdentity = async (nextIdentity: Exclude<Identity, null> | "wechat") => {
+    if (nextIdentity === "wechat") return;
+
+    if (nextIdentity === "google" || nextIdentity === "github") {
+      if (!apiConfigured) return;
+      window.location.assign(oauthStartUrl(nextIdentity));
+      return;
+    }
+
+    if (!apiConfigured) {
+      completeIdentitySelection("guest");
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const guest = await createOrRestoreGuest();
+      completeIdentitySelection(identityFromResponse(guest));
+    } catch {
+      setAuthError(ui.auth.connectionError);
+    } finally {
+      setAuthBusy(false);
+    }
   };
 
   return (
@@ -1503,8 +1638,12 @@ export default function App() {
       <LoginDialog
         ui={ui}
         open={loginOpen}
+        providers={authProviders}
+        busy={authBusy}
+        error={authError}
         onClose={() => {
           pendingAction.current = null;
+          setAuthError("");
           setLoginOpen(false);
         }}
         onSelect={selectIdentity}
