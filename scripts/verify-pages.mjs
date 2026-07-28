@@ -1,6 +1,6 @@
 import { chromium } from "playwright-core";
 
-const baseUrl = "http://127.0.0.1:4175";
+const baseUrl = "http://127.0.0.1:4175/autodraftman";
 const executablePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const browser = await chromium.launch({ executablePath, headless: true });
 const page = await browser.newPage({
